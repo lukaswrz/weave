@@ -2,5 +2,5 @@
 writeShellApplication {
   name = "weave";
 
-  text = builtins.readFile ../../weave;
+  text = builtins.readFile ./weave;
 }
