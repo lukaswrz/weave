@@ -4,27 +4,27 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-progname="$0"
+progname=$0
 
-error() {
+shopt -s nullglob globstar
+
+warn() {
     local line
     for line in "$@"; do
         echo "$progname: $line" 1>&2
     done
+}
+
+error() {
+    warn "$@"
 
     exit 1
 }
 
-shopt -s nullglob globstar
-
-if [[ ! -v WEAVE_HIST || -z $WEAVE_HIST ]]; then
-    WEAVE_HIST=.weavehist
-fi
-
 args=$(
     getopt \
-        --options f:t:Fivm: \
-        --longoptions from:,to:,force,interactive,verbose,directory-mode: \
+        --options f:t:Fivm:H:: \
+        --longoptions from:,to:,force,interactive,verbose,directory-mode:,history:: \
         --name "$0" \
         -- "$@"
 )
@@ -36,6 +36,17 @@ to=${WEAVE_TO:-$HOME}
 lnflags=()
 mkdirflags=()
 rmflags=()
+
+dohist=0
+histpath=.weavehist
+
+if [[ -v WEAVE_HIST ]]; then
+    dohist=1
+    if [[ -n $WEAVE_HIST ]]; then
+        histpath=$WEAVE_HIST
+    fi
+fi
+
 while true; do
     case "$1" in
     -f | --from)
@@ -66,6 +77,13 @@ while true; do
         mkdirflags+=(--mode "$2")
         shift 2
         ;;
+    -H | --history)
+        dohist=1
+        if [[ -n $2 ]]; then
+            histpath=$2
+        fi
+        shift 2
+        ;;
     --)
         shift
         break
@@ -88,28 +106,54 @@ fi
 shopt -s dotglob
 
 hist=()
-if [[ -n $WEAVE_HIST ]]; then
-    if [[ -r $WEAVE_HIST ]]; then
+if ((dohist)); then
+    if [[ -r $histpath ]]; then
         while IFS= read -r link; do
             hist+=("$link")
-        done <"$WEAVE_HIST"
+        done <"$histpath"
     fi
 
-    : >"$WEAVE_HIST"
+    : >"$histpath"
 fi
+
+histupdate() {
+    if (($# != 1)); then
+        error 'invalid number of arguments'
+    fi
+
+    local link=$1
+    
+    local newhist=()
+
+    if ((dohist)); then
+        for entry in "${hist[@]}"; do
+            if [[ $entry != "$link" ]]; then
+                newhist+=("$entry")
+            fi
+        done
+        hist=("${newhist[@]}")
+        echo "$link" >>"$histpath"
+    fi
+}
 
 for choice in "${choices[@]}"; do
     prefix=$from/$choice
     for target in "$prefix"/**/*; do
-        if [[ -f $target ]]; then
-            link=$to${target#"$prefix"}
-            parent=$(dirname -- "$link")
-            mkdir --parents "${mkdirflags[@]}" -- "$parent"
-            ln --symbolic "${lnflags[@]}" -- "$target" "$link"
-            if [[ -n "$WEAVE_HIST" ]]; then
-                echo "$link" >>"$WEAVE_HIST"
-            fi
+        if [[ ! -f $target ]]; then
+            continue
         fi
+
+        link=$to${target#"$prefix"}
+        parent=$(dirname -- "$link")
+
+        if [[ -L $link && "$(realpath -- "$link")" == "$target" ]]; then
+            histupdate "$link"
+            continue
+        fi
+        
+        mkdir --parents "${mkdirflags[@]}" -- "$parent"
+        ln --symbolic "${lnflags[@]}" -- "$target" "$link"
+        histupdate "$link"
     done
 done
 
